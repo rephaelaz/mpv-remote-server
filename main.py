@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import socket
 import sys
@@ -12,29 +13,24 @@ TIMEOUT = 0.2
 DEBUG = True
 
 
-class Logger:
-    def log(self, msg: str) -> None:
-        if DEBUG:
-            print(f'REMOTE - {self.__class__.__name__:12} - {msg}')
-
-
-class Advertiser(Thread, Logger):
+class Advertiser(Thread):
     def __init__(self, s: 'Server'):
         super().__init__()
-        self.log('Init')
+        self.logger = logging.getLogger('Advertiser')
+        self.logger.debug('Init')
         self.server = s
         self._enabled = True
 
     def enable(self) -> None:
-        self.log('Enabled')
+        self.logger.debug('Enabled')
         self._enabled = True
 
     def disable(self) -> None:
-        self.log('Disabled')
+        self.logger.debug('Disabled')
         self._enabled = False
 
     def run(self) -> None:
-        self.log('Start')
+        self.logger.debug('Start')
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.bind(('', 0))
         s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -44,7 +40,7 @@ class Advertiser(Thread, Logger):
                 data = f'{MAGIC}{socket.gethostname()}'
                 s.sendto(data.encode(), ('<broadcast>', PORT))
             time.sleep(1)
-        self.log('Done')
+        self.logger.debug('Done')
 
 
 def osd_message(message: str) -> str:
@@ -68,65 +64,67 @@ def chapter_metadata() -> str:
     return json.dumps(data) + '\n'
 
 
-class Receiver(Thread, Logger):
+class Receiver(Thread):
     def __init__(self, s: 'Server'):
         super().__init__()
-        self.log('Init')
+        self.logger = logging.getLogger('Receiver')
+        self.logger.debug('Init')
         self.server = s
 
     def run(self) -> None:
-        self.log('Start')
+        self.logger.debug('Start')
         while not self.server.quit:
             try:
                 data = self.server.connection.recv(4096)
                 if not data:
-                    self.log('Connection to remote closed')
+                    self.logger.debug('Connection to remote closed')
                     self.server.connection.close()
                     return
                 message = osd_message(data.decode())
             except socket.timeout:
                 if self.server.ipc_socket.fileno() == -1:
-                    self.log('ipc_socket closed')
+                    self.logger.debug('ipc_socket closed')
                     # self.server.quit = True
                     return
                 continue
             except socket.error:
-                self.log('Connection to remote closed')
+                self.logger.debug('Connection to remote closed')
                 self.server.connection.close()
                 return
             try:
                 self.server.ipc_socket.send(message.encode())
             except socket.error:
-                self.log('ipc_socket closed')
+                self.logger.debug('ipc_socket closed')
                 self.server.ipc_socket.close()
                 # self.server.quit = True
                 return
 
 
-class Sender(Thread, Logger):
+class Sender(Thread):
     def __init__(self, s: 'Server'):
         super().__init__()
-        self.log('Init')
+        self.logger = logging.getLogger('Sender')
+        self.logger.debug('Init')
         self.server = s
 
     def run(self) -> None:
-        self.log('Start')
+        self.logger.debug('Start')
         while not self.server.quit:
             try:
                 data = self.server.ipc_socket.recv(4096)
                 if not data:
-                    self.log('ipc socket closed')
+                    self.logger.debug('ipc socket closed')
                     self.server.ipc_socket.close()
                     # self.server.quit = True
                     return
-                self.log(data.decode())
+                self.logger.debug(data.decode())
             except socket.timeout:
                 if self.server.connection.fileno() == -1:
-                    self.log('Connection to remote closed')
+                    self.logger.debug('Connection to remote closed')
                     return
                 continue
             except socket.error:
-                self.log('ipc_socket closed')
+                self.logger.debug('ipc_socket closed')
                 self.server.ipc_socket.close()
                 # self.server.quit = True
                 return
@@ -134,14 +132,16 @@ class Sender(Thread, Logger):
             try:
                 self.server.connection.send(data)
             except socket.error:
-                self.log('Connection to remote closed')
+                self.logger.debug('Connection to remote closed')
                 self.server.connection.close()
                 return
 
 
-class Server(Logger):
+class Server:
     def __init__(self, ipc_socket_path: str):
-        self.log('Init')
+        super().__init__()
+        self.logger = logging.getLogger('Server')
+        self.logger.debug('Init')
         self.ipc_socket_path = ipc_socket_path
         self.ipc_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.ipc_socket.connect(ipc_socket_path)
@@ -161,11 +161,11 @@ class Server(Logger):
         self.quit = False
 
     def run(self):
-        self.log('Start')
+        self.logger.debug('Start')
         self.advertiser.start()
 
         while not self.quit:
-            self.log('Start listening')
+            self.logger.debug('Start listening')
             self.advertiser.enable()
             self.listener.listen()
 
@@ -178,13 +178,13 @@ class Server(Logger):
                 try:
                     data = self.ipc_socket.recv(4096)
                     if not data:
-                        self.log('ipc_socket closed')
+                        self.logger.debug('ipc_socket closed')
                         self.quit = True
                         break
                 except socket.timeout:
                     pass
                 except socket.error:
-                    self.log('ipc_socket closed')
+                    self.logger.debug('ipc_socket closed')
                     self.quit = True
                     break
             if self.quit:
@@ -192,7 +192,7 @@ class Server(Logger):
                 
             self.advertiser.disable()
             self.connection.settimeout(TIMEOUT)
-            self.log(f'Connected to {self.address}')
+            self.logger.debug(f'Connected to {self.address}')
 
             self.sender = Sender(self)
             self.sender.start()
@@ -205,7 +205,7 @@ class Server(Logger):
             self.connection.close()
 
             if self.ipc_socket.fileno() == -1:
-                self.log('ipc_socket closed')
+                self.logger.debug('ipc_socket closed')
                 self.quit = True
                 break
 
@@ -214,11 +214,13 @@ class Server(Logger):
 
         if os.path.exists(self.ipc_socket_path):
             os.remove(self.ipc_socket_path)
-            self.log('Manually deleted ipc socket file')
+            self.logger.debug('Manually deleted ipc socket file')
 
-        self.log('Server closed, goodbye :)')
+        self.logger.debug('Server closed, goodbye :)')
 
 
 if __name__ == '__main__':
+    logging.basicConfig(format='%(asctime)s - %(name)-12s - %(message)s', datefmt='%I:%M:%S',
+                        level=logging.DEBUG)
     server = Server(sys.argv[1])
     server.run()
