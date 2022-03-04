@@ -4,13 +4,23 @@ import os
 import socket
 import sys
 import time
+from enum import IntEnum
 from threading import Thread
-from typing import Optional
+from typing import Optional, Dict
 
 MAGIC = "2kd94ba0"
 PORT = 32160
 TIMEOUT = 0.2
 DEBUG = True
+
+
+class ID(IntEnum):
+    PLAY = 100
+    FFW = 101
+    RWD = 102
+    NEXT = 103
+    PREV = 104
+    TITLE = 105
 
 
 class Advertiser(Thread):
@@ -44,23 +54,21 @@ class Advertiser(Thread):
 
 
 def osd_message(message: str) -> str:
-    data = {
-        'command': ['show-text', message]
-    }
+    data = {'command': ['show-text', message]}
     return json.dumps(data) + '\n'
 
 
 def playback_time() -> str:
-    data = {
-        'command': ["get_property", "playback-time"]
-    }
+    data = {'command': ["get_property", "playback-time"]}
     return json.dumps(data) + '\n'
 
 
 def chapter_metadata() -> str:
-    data = {
-        'command': ["get_property", "chapters"]
-    }
+    data = {'command': ["get_property", "chapters"]}
+    return json.dumps(data) + '\n'
+
+
+def encode(data: Dict) -> str:
     return json.dumps(data) + '\n'
 
 
@@ -80,11 +88,10 @@ class Receiver(Thread):
                     self.logger.debug('Connection to remote closed')
                     self.server.connection.close()
                     return
-                message = osd_message(data.decode())
+                message = self.parse(data.decode())
             except socket.timeout:
                 if self.server.ipc_socket.fileno() == -1:
                     self.logger.debug('ipc_socket closed')
-                    # self.server.quit = True
                     return
                 continue
             except socket.error:
@@ -92,12 +99,28 @@ class Receiver(Thread):
                 self.server.connection.close()
                 return
             try:
-                self.server.ipc_socket.send(message.encode())
+                if message:
+                    self.server.ipc_socket.send(message.encode())
             except socket.error:
                 self.logger.debug('ipc_socket closed')
                 self.server.ipc_socket.close()
-                # self.server.quit = True
                 return
+
+    @staticmethod
+    def parse(message: str) -> str:
+        if message == 'play':
+            return encode({"command": ["cycle", "pause"], "request_id": ID.PLAY})
+        elif message == 'ffw':
+            return encode({"command": ["seek", 5], "request_id": ID.FFW})
+        elif message == 'rwd':
+            return encode({"command": ["seek", -5], "request_id": ID.RWD})
+        elif message == 'next':
+            return encode({"command": ["playlist-next"], "request_id": ID.NEXT})
+        elif message == 'prev':
+            return encode({"command": ["playlist-prev"], "request_id": ID.PREV})
+        elif message == 'title':
+            return encode({"command": ["get_property", "media-title"], "request_id": ID.TITLE})
+        return ''
 
 
 class Sender(Thread):
@@ -115,9 +138,8 @@ class Sender(Thread):
                 if not data:
                     self.logger.debug('ipc socket closed')
                     self.server.ipc_socket.close()
-                    # self.server.quit = True
                     return
-                self.logger.debug(data.decode())
+                message = self.parse(json.loads(data.decode()))
             except socket.timeout:
                 if self.server.connection.fileno() == -1:
                     self.logger.debug('Connection to remote closed')
@@ -126,15 +148,25 @@ class Sender(Thread):
             except socket.error:
                 self.logger.debug('ipc_socket closed')
                 self.server.ipc_socket.close()
-                # self.server.quit = True
                 return
 
             try:
-                self.server.connection.send(data)
+                if message:
+                    self.logger.debug(message)
+                    self.server.connection.send(message.encode())
             except socket.error:
                 self.logger.debug('Connection to remote closed')
                 self.server.connection.close()
                 return
+
+    @staticmethod
+    def parse(message: Dict) -> str:
+        if 'event' in message.keys():
+            pass
+        elif 'request_id' in message.keys():
+            if message['request_id'] == ID.TITLE:
+                return encode({'title': message['data']})
+        return ''
 
 
 class Server:
